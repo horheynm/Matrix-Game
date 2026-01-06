@@ -2,19 +2,16 @@
 
 * added profiling and bencnmarkign script inside inference.py
 
-benchmarking
+benchmarking - more runs, get the metrics
 ```
 python inference.py   --config_path configs/inference_yaml/inference_universal.yaml   --img_path demo_images/universal/0001.png   --warmup_blocks 1 --max_blocks 4   --profile_focus all --profile_timesteps 2   --skip_video_write
 ```
 
-profiling
-```
-python inference.py \
-  --config_path configs/inference_yaml/inference_universal.yaml \
-  --img_path demo_images/universal/0001.png \
-  --warmup_blocks 1 --max_blocks 4 \
-  --profile_focus denoise --profile_timesteps 2 \
-  --torch_profile \
-  --skip_video_write
 
+Profiling all inference pipeline - less runs, get the bottlenecks
 ```
+python inference.py     --config_path configs/inference_yaml/inference_universal.yaml     -img_path demo_images/universal/0000.png      --num_output_frames 150     --output_folder outputs/     --pretrained_model_path /home/mac_local/Matrix-Game/Matrix-Game-2/Matrix-Game-2.0 --profile --torch_profile   --warmup_blocks 2   --max_blocks 6   --torch_profile   --torch_profile_dir prof_runs/matrix2_small   --skip_video_write
+```
+which generated the profiler_0000.png image. 
+Here note that VAE decode dominates, but is polluted by torch compile calls, so not a great representation. 
+The denoise and context update is dominated by convolutions - aten::conv3d, aten::convolution, aten::conv_dilated_3d. So they are good targets to optimize

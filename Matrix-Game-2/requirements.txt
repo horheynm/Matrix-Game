@@ -40,3 +40,4 @@ flask
 flask-socketio
 torchao
 torch
+tensorboard

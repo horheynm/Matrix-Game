@@ -47,7 +47,7 @@ def parse_args():
     # ---- benchmarking/profiling knobs ----
     parser.add_argument("--bench", action="store_true",
                         help="Benchmark run: skip mp4 writing and save metrics JSON.")
-    parser.add_argument("--warmup_blocks", type=int, default=5,
+    parser.add_argument("--warmup_blocks", type=int, default=3,
                         help="Blocks to run but exclude from metrics.")
     parser.add_argument("--max_blocks", type=int, default=0,
                         help="Max blocks to run (0 => run all blocks).")
@@ -350,3 +350,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
