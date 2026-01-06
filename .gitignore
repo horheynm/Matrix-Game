@@ -30,3 +30,8 @@ var/
 
 # Dev
 venv
+.venv
+outputs
+**/Matrix-Game-2.0
+**/prof_runs
+**/_prof_runs
