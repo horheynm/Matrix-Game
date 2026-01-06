@@ -29,7 +29,7 @@ pydantic
 scikit-image
 huggingface_hub[cli]
 dominate
-nvidia-pyindex
+# nvidia-pyindex
 nvidia-tensorrt
 pycuda
 onnx
@@ -39,3 +39,4 @@ onnxconverter_common
 flask
 flask-socketio
 torchao
+torch

@@ -30,15 +30,19 @@ conda activate matrix-game-2.0
 # Our project also depends on [FlashAttention](https://github.com/Dao-AILab/flash-attention)
 git clone https://github.com/SkyworkAI/Matrix-Game.git
 cd Matrix-Game-2
+pip3 install setuptools
 pip install -r requirements.txt
 python setup.py develop
+
+pip install flash-attn --no-build-isolation
 ```
 
 
 ## Quick Start
 ### Download checkpoints
+# setup hf cli
 ```
-huggingface-cli download Skywork/Matrix-Game-2.0 --local-dir Matrix-Game-2.0
+hf download Skywork/Matrix-Game-2.0 --local-dir Matrix-Game-2.0
 ```
 
 ### Inference
