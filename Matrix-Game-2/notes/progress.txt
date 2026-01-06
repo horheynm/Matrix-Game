@@ -1,0 +1,20 @@
+
+
+* added profiling and bencnmarkign script inside inference.py
+
+benchmarking
+```
+python inference.py   --config_path configs/inference_yaml/inference_universal.yaml   --img_path demo_images/universal/0001.png   --warmup_blocks 1 --max_blocks 4   --profile_focus all --profile_timesteps 2   --skip_video_write
+```
+
+profiling
+```
+python inference.py \
+  --config_path configs/inference_yaml/inference_universal.yaml \
+  --img_path demo_images/universal/0001.png \
+  --warmup_blocks 1 --max_blocks 4 \
+  --profile_focus denoise --profile_timesteps 2 \
+  --torch_profile \
+  --skip_video_write
+
+```
