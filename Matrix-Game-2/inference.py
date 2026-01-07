@@ -240,18 +240,43 @@ class InteractiveGameInference:
         t0 = time.perf_counter()
         if self.args.torch_profile:
             from torch.profiler import profile as torch_profile
-            from torch.profiler import ProfilerActivity
+            from torch.profiler import ProfilerActivity, schedule
 
             os.makedirs(self.args.torch_profile_dir, exist_ok=True)
             trace_path = os.path.join(self.args.torch_profile_dir, "trace.json")
             summary_path = os.path.join(self.args.torch_profile_dir, "profiler_summary.txt")
 
-            # Keep profiler runs small by using --max_blocks/--profile_timesteps
+            # --- Phase 0: warm compile / autotune OUTSIDE the profiler ---
+            # This minimizes compile noise in the exported trace.
+            warm_compile_blocks = int(self.args.warmup_blocks) if int(self.args.warmup_blocks) > 0 else 2
+            warm_compile_total = warm_compile_blocks + 1  # a little extra
+            with torch.no_grad():
+                _ = self.pipeline.inference(
+                    noise=sampled_noise,
+                    conditional_dict=conditional_dict,
+                    return_latents=False,
+                    mode=mode,
+                    profile=False,
+                    warmup_blocks=0,
+                    max_blocks=warm_compile_total,
+                    torch_profiler=None,
+                    return_metrics=False,
+                    profile_focus=self.args.profile_focus,
+                    profile_timesteps=int(self.args.profile_timesteps),
+                )
+            torch.cuda.synchronize()
+
+            # --- Phase 1: capture ONLY steady blocks using a schedule ---
+            wait = int(self.args.warmup_blocks)
+            active = int(self.args.max_blocks) if int(self.args.max_blocks) > 0 else 4
+            total_blocks = wait + active
+
             with torch_profile(
                 activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
                 record_shapes=True,
                 profile_memory=True,
                 with_stack=False,
+                schedule=schedule(wait=wait, warmup=0, active=active, repeat=1),
             ) as prof:
                 with torch.no_grad():
                     videos, metrics = self.pipeline.inference(
@@ -260,9 +285,8 @@ class InteractiveGameInference:
                         return_latents=False,
                         mode=mode,
                         profile=False,  # avoid per-block prints during profiler capture
-
-                        warmup_blocks=int(self.args.warmup_blocks),
-                        max_blocks=int(self.args.max_blocks),
+                        warmup_blocks=0,          # schedule handles "warmup exclusion"
+                        max_blocks=total_blocks,  # run enough blocks to cover wait+active
                         torch_profiler=prof,
                         return_metrics=True,
                         profile_focus=self.args.profile_focus,
@@ -272,7 +296,12 @@ class InteractiveGameInference:
 
             prof.export_chrome_trace(trace_path)
             with open(summary_path, "w") as f:
-                f.write(prof.key_averages().table(sort_by="self_cuda_time_total", row_limit=int(self.args.prof_row_limit)))
+                f.write(
+                    prof.key_averages().table(
+                        sort_by="self_cuda_time_total",
+                        row_limit=int(self.args.prof_row_limit),
+                    )
+                )
 
             print(f"[torch.profiler] wrote:\n  {trace_path}\n  {summary_path}")
         else:
@@ -283,7 +312,6 @@ class InteractiveGameInference:
                     return_latents=False,
                     mode=mode,
                     profile=True,  # prints per-block breakdown after warmup
-
                     warmup_blocks=int(self.args.warmup_blocks),
                     max_blocks=int(self.args.max_blocks),
                     torch_profiler=None,

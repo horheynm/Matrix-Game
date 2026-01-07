@@ -15,3 +15,51 @@ python inference.py     --config_path configs/inference_yaml/inference_universal
 which generated the profiler_0000.png image. 
 Here note that VAE decode dominates, but is polluted by torch compile calls, so not a great representation. 
 The denoise and context update is dominated by convolutions - aten::conv3d, aten::convolution, aten::conv_dilated_3d. So they are good targets to optimize
+
+---
+
+To remove the torch compile work, I added three changes - in-process prewarm up step, resetting peak VRAM, start torch.profiler and run the measured blocks to remove no compile. However this didnt work out and produced very similar profiling result to profiler_0000.png. 
+After the code edit, the following code were run, first for warm up and second for profiling
+```
+python inference.py \
+  --config_path configs/inference_yaml/inference_universal.yaml \
+  --img_path demo_images/universal/0000.png \
+  --num_output_frames 150 \
+  --output_folder outputs/ \
+  --pretrained_model_path /home/mac_local/Matrix-Game/Matrix-Game-2/Matrix-Game-2.0 \
+  --bench \
+  --warmup_blocks 4 \
+  --max_blocks 8
+
+```
+
+then
+```
+python inference.py \
+  --config_path configs/inference_yaml/inference_universal.yaml \
+  --img_path demo_images/universal/0000.png \
+  --num_output_frames 150 \
+  --output_folder outputs/ \
+  --pretrained_model_path /home/mac_local/Matrix-Game/Matrix-Game-2/Matrix-Game-2.0 \
+  --bench --torch_profile \
+  --warmup_blocks 2 \
+  --max_blocks 4 \
+  --torch_profile_dir prof_runs/matrix2_clean
+
+
+```
+
+From the profling results, it looks like the bottlenecks are VAE decode, overhead from torch compile, and plaves with lots of memory or overhead heavy operations like aten::fill_ -> 123k calls.
+To be confident about memory vs compute bound we also need nsight systems, so we will do this after trying another crack at geting rid of torch compile overhead. 
+
+---
+
+Updated the inference.py code, to exclude the inital runs containing torch.compile. In pareto, when searching `compile.compile_inner`, it no longer shows up. The profiler image is in profiler_0002.png
+Therefore, we have accomplished 
+1. Getting rid of torch compile overhead
+2. profling only the steady states of the world model's inference, broken up into denoise, context update, and VAE decode. 
+
+```
+python inference.py   --config_path configs/inference_yaml/inference_universal.yaml   --img_path demo_images/universal/0000.png   --num_output_frames 150   --output_folder outputs/   --pretrained_model_path /home/mac_local/Matrix-Game/Matrix-Game-2/Matrix-Game-2.0   --bench --torch_profile   --warmup_blocks 2   --max_blocks 4   --torch_profile_dir prof_runs/matrix2_clean
+```
+
