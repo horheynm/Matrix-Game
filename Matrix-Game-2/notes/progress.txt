@@ -100,3 +100,103 @@ If python CPU was the bottleneck, we will see more time here.
 
 Therefore the limiter is the GPU side compute/memory work from denoise and VAE decode.
 
+---
+Next we obtain the profiler results for denoise and VAE decode.
+
+To obtain the cuda runtime for denoise, we also run the profiler focusing just on the denoise
+
+```
+python inference.py \
+  --config_path configs/inference_yaml/inference_universal.yaml \
+  --img_path demo_images/universal/0000.png \
+  --num_output_frames 150 \
+  --output_folder outputs/ \
+  --pretrained_model_path /home/mac_local/Matrix-Game/Matrix-Game-2/Matrix-Game-2.0 \
+  --bench --torch_profile \
+  --warmup_blocks 2 \
+  --max_blocks 6 \
+  --profile_focus denoise \
+  --profile_timesteps 0 \
+  --torch_profile_dir prof_runs/matrix2_denoise_clean
+
+```
+
+where the head of the results are
+```
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                                   Name    Self CPU %      Self CPU   CPU total %     CPU total  CPU time avg     Self CUDA   Self CUDA %    CUDA total  CUDA time avg       CPU Mem  Self CPU Mem      CUDA Mem  Self CUDA Mem    # of Calls  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                                denoise         0.00%       0.000us         0.00%       0.000us       0.000us        2.997s       261.11%        2.997s     499.447ms           0 B           0 B           0 B           0 B             6  
+                                            aten::copy_         6.71%     205.826ms        12.91%     395.817ms       8.893us     226.122ms        19.70%     226.151ms       5.081us       1.00 KB     -17.00 KB           0 B           0 B         44509  
+                                            aten::addmm         5.35%     164.031ms         6.53%     200.159ms      35.948us     174.717ms        15.22%     174.904ms      31.412us           0 B           0 B      55.54 GB      55.54 GB          5568  
+                        flash_attn::_flash_attn_forward         1.20%      36.783ms         1.71%      52.340ms      96.926us     166.994ms        14.55%     168.215ms     311.509us           0 B           0 B       2.80 GB           0 B           540  
+void flash::flash_fwd_kernel<Flash_fwd_kernel_traits...         0.00%       0.000us         0.00%       0.000us       0.000us     166.994ms        14.55%     166.994ms     309.249us           0 B           0 B           0 B           0 B           540  
+                 flash_attn::_flash_attn_varlen_forward         2.50%      76.590ms         3.40%     104.196ms      96.477us     131.425ms        11.45%     131.829ms     122.064us           0 B           0 B       8.29 GB           0 B          1080  
+void flash::flash_fwd_kernel<Flash_fwd_kernel_traits...         0.00%       0.000us         0.00%       0.000us       0.000us     131.425ms        11.45%     131.425ms     121.690us           0 B           0 B           0 B           0 B          1080  
+void at::native::elementwise_kernel<128, 4, at::nati...         0.00%       0.000us         0.00%       0.000us       0.000us     126.537ms        11.03%     126.537ms       4.056us           0 B           0 B           0 B           0 B         31194  
+                                              aten::mul         2.64%      81.048ms         4.07%     124.718ms       7.989us     118.995ms        10.37%     119.038ms       7.625us      44.72 KB      44.72 KB     106.55 GB     106.55 GB         15612  
+                                              aten::add         2.07%      63.363ms         3.37%     103.205ms      11.814us     111.999ms         9.76%     112.064ms      12.828us           0 B           0 B      33.02 GB      33.01 GB          8736  
+
+```
+and the profiler screenshot is in profiler_0004.png
+
+For decode 
+
+```
+python inference.py \
+  --config_path configs/inference_yaml/inference_universal.yaml \
+  --img_path demo_images/universal/0000.png \
+  --num_output_frames 150 \
+  --output_folder outputs/ \
+  --pretrained_model_path /home/mac_local/Matrix-Game/Matrix-Game-2/Matrix-Game-2.0 \
+  --bench --torch_profile \
+  --warmup_blocks 2 \
+  --max_blocks 6 \
+  --profile_focus decode \
+  --profile_timesteps 0 \
+  --torch_profile_dir prof_runs/matrix2_decode_clean
+
+```
+
+```
+
+------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                                   Name    Self CPU %      Self CPU   CPU total %     CPU total  CPU time avg     Self CUDA   Self CUDA %    CUDA total  CUDA time avg       CPU Mem  Self CPU Mem      CUDA Mem  Self CUDA Mem    # of Calls  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                                denoise         0.00%       0.000us         0.00%       0.000us       0.000us        2.961s       103.63%        2.961s     493.445ms           0 B           0 B           0 B           0 B             6  
+                                             vae_decode         0.00%       0.000us         0.00%       0.000us       0.000us        1.773s        62.08%        1.773s     295.575ms           0 B           0 B           0 B           0 B             6  
+                              aten::slow_conv_dilated3d         2.27%     107.787ms        28.80%        1.365s       2.615ms        1.156s        40.48%        1.425s       2.730ms           0 B           0 B      28.92 GB    -770.99 GB           522  
+void at::native::vol2col_kernel<c10::Half>(long, c10...         0.00%       0.000us         0.00%       0.000us       0.000us     840.172ms        29.41%     840.172ms       1.667ms           0 B           0 B           0 B           0 B           504  
+                                            aten::copy_         5.09%     241.369ms        23.36%        1.107s      14.502us     385.904ms        13.51%     397.265ms       5.204us          32 B     -18.34 KB           0 B           0 B         76332  
+void at::native::elementwise_kernel<128, 4, at::nati...         0.00%       0.000us         0.00%       0.000us       0.000us     210.601ms         7.37%     210.601ms       6.561us           0 B           0 B           0 B           0 B         32100  
+             nvjet_hsh_384x96_64x3_2x1_v_badd_coopA_NNT         0.00%       0.000us         0.00%       0.000us       0.000us     181.738ms         6.36%     181.738ms       1.683ms           0 B           0 B           0 B           0 B           108  
+                                            aten::addmm         2.99%     141.606ms         3.77%     178.456ms      32.399us     174.769ms         6.12%     174.769ms      31.730us           0 B           0 B      55.18 GB      55.18 GB          5508  
+                        flash_attn::_flash_attn_forward         0.77%      36.290ms         1.06%      50.031ms      92.651us     167.632ms         5.87%     167.632ms     310.429us           0 B           0 B       2.80 GB           0 B           540  
+void flash::flash_fwd_kernel<Flash_fwd_kernel_traits...         0.00%       0.000us         0.00%       0.000us       0.000us     167.632ms         5.87%     167.632ms     310.429us           0 B           0 B           0 B           0 B           540  
+                                              aten::mul         1.76%      83.415ms         3.24%     153.340ms       9.699us     144.274ms         5.05%     146.700ms       9.279us      44.72 KB      44.72 KB     129.51 GB     129.51 GB         15810  
+                                    Command Buffer Full        14.67%     695.291ms        14.67%     695.291ms     299.824us     143.620ms         5.03%     143.620ms      61.932us           0 B           0 B           0 B           0 B          2319  
+                                              aten::cat         1.65%      78.217ms         3.31%     157.029ms      19.272us     142.206ms         4.98%     147.072ms      18.050us           0 B           0 B     118.39 GB     118.39 GB          8148  
+                 flash_attn::_flash_attn_varlen_forward         1.59%      75.300ms         2.16%     102.207ms      94.636us     142.018ms         4.97%     142.259ms     131.721us           0 B           0 B       8.29 GB           0 B          1080  
+void flash::flash_fwd_kernel<Flash_fwd_kernel_traits...         0.00%       0.000us         0.00%       0.000us       0.000us     142.018ms         4.97%     142.018ms     131.498us           0 B           0 B           0 B           0 B          1080  
+                                              aten::add         1.39%      66.055ms         3.18%     150.646ms      16.839us     136.146ms         4.77%     139.000ms      15.538us           0 B           0 B      57.63 GB      57.63 GB          8946  
+void at::native::elementwise_kernel<128, 4, at::nati...         0.00%       0.000us         0.00%       0.000us       0.000us     128.061ms         4.48%     128.061ms       4.090us           0 B           0 B           0 B           0 B         31314  
+         nvjet_tst_128x240_64x4_2x1_v_bz_coopA_bias_TNT         0.00%       0.000us         0.00%       0.000us       0.000us     107.284ms         3.76%     107.284ms      28.382us           0 B           0 B           0 B           0 B          3780  
+void at::native::elementwise_kernel<128, 4, at::nati...         0.00%       0.000us         0.00%       0.000us       0.000us      95.224ms         3.33%      95.224ms      24.954us           0 B           0 B           0 B           0 B          3816  
+            nvjet_hsh_192x192_64x3_2x1_v_badd_coopB_NNN         0.00%       0.000us         0.00%       0.000us       0.000us      94.158ms         3.30%      94.158ms     871.835us           0 B           0 B           0 B           0 B           108  
+## Call CompiledFxGraph falkigfpqu63d44rrli4yuhn3ozj...         0.00%       0.000us         0.00%       0.000us       0.000us      64.509ms         2.26%      64.509ms       3.584ms           0 B           0 B           0 B           0 B            18  
+                         Memcpy DtoD (Device -> Device)         0.00%       0.000us         0.00%       0.000us       0.000us      61.191ms         2.14%      61.191ms      13.193us           0 B           0 B           0 B           0 B          4638  
+
+```
+and the profiler result is in profiler_0003.png. Note that we need the latent variables from denoise, so this is included in the profiler. 
+
+From the above tables and profiler results we see that
+- Denoise is the biggest wall-time bucket 
+    2.961s total (avg ~493ms per block call)
+- Decode is next
+    1.773s total (avg ~296ms per block call) which is ~38% of (denoise + decode) time
+- VAE decode 
+    aten::slow_conv_dilated3d ~1.156s in self CUDA, 522 calls
+    vol2col_kernel ~840ms self CUDA, 504 calls
+    The pair tells 3D conv lowering/im2col fallback
+- “Command Buffer Full”
+    ~695ms CPU self in Command Buffer Full plus ~143ms CUDA, which means too many small kernels / launch pressure, GPU command buffer saturating causing CPU stalls.

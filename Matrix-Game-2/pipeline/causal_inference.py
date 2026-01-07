@@ -167,9 +167,8 @@ class CausalInferencePipeline(torch.nn.Module):
 
         if self.num_frame_per_block > 1:
             self.generator.model.num_frame_per_block = self.num_frame_per_block
-
-    def inference(
-        self,
+    def inference(  
+        self,                                   
         noise: torch.Tensor,
         conditional_dict,
         initial_latent=None,
@@ -188,19 +187,17 @@ class CausalInferencePipeline(torch.nn.Module):
         """
         Inference with optional benchmarking/profiling support.
 
-        Metrics returned (if return_metrics=True):
-        - block_ms_total / denoise / ctx / decode (lists, measured after warmup)
-        - fps (list, only meaningful when decode is included)
-        - frames_per_block
-        - peak_mem_bytes (peak allocated VRAM during run; caller should reset_peak_memory_stats() before)
+        Note on profile_focus:
+        - decode/ctx still REQUIRE denoise unless you add a separate “reuse latents” mode.
+        - profile_focus controls what extra stages run (ctx/decode), not whether denoise runs.
         """
         import copy
         from tqdm import tqdm
         from einops import rearrange
         from demo_utils.constant import ZERO_VAE_CACHE
         from torch.profiler import record_function
+        from contextlib import contextmanager
 
-      
         if profile_focus not in ("all", "denoise", "ctx", "decode"):
             raise ValueError(f"Invalid profile_focus={profile_focus}. Must be one of: all|denoise|ctx|decode")
 
@@ -263,6 +260,33 @@ class CausalInferencePipeline(torch.nn.Module):
         else:
             denoise_steps = self.denoising_step_list
 
+        # --- trace helpers ---
+        sync_for_trace = (torch_profiler is not None)
+
+        @contextmanager
+        def trace_range(name: str):
+            # record_function gives CPU-side ranges; NVTX helps GPU timeline labels in Perfetto.
+            pushed = False
+            if torch_profiler is not None:
+                try:
+                    torch.cuda.nvtx.range_push(name)
+                    pushed = True
+                except Exception:
+                    pushed = False
+
+            with record_function(name):
+                yield
+
+            if pushed:
+                try:
+                    torch.cuda.nvtx.range_pop()
+                except Exception:
+                    pass
+
+        def _trace_sync():
+            if sync_for_trace:
+                torch.cuda.synchronize()
+
         # ---- KV cache setup (keep your original behavior) ----
         self.kv_cache1 = self.kv_cache_keyboard = self.kv_cache_mouse = self.crossattn_cache = None
 
@@ -271,7 +295,6 @@ class CausalInferencePipeline(torch.nn.Module):
             self._initialize_kv_cache_mouse_and_keyboard(batch_size=batch_size, dtype=noise.dtype, device=noise.device)
             self._initialize_crossattn_cache(batch_size=batch_size, dtype=noise.dtype, device=noise.device)
         else:
-            # (Unreachable with the line above, but kept for parity if you later reuse caches.)
             for block_index in range(self.num_transformer_blocks):
                 self.crossattn_cache[block_index]["is_init"] = False
             for block_index in range(len(self.kv_cache1)):
@@ -316,78 +339,79 @@ class CausalInferencePipeline(torch.nn.Module):
                 :, :, current_start_frame - num_input_frames:current_start_frame + current_num_frames - num_input_frames
             ]
 
-            # For per-block profiling traces
-            with record_function(f"BLOCK_{block_i:03d}"):
+            with trace_range(f"BLOCK_{block_i:03d}"):
                 if use_metrics:
                     ev_total_s.record()
 
                 # ------------------------------
-                # denoise
+                # denoise (needed to produce latents for ctx/decode)
                 # ------------------------------
                 denoised_pred = None
                 timestep = None
 
-                if profile_focus in ("all", "denoise", "ctx", "decode"):
-                    if use_metrics:
-                        ev_den_s.record()
+                if use_metrics:
+                    ev_den_s.record()
 
-                    with record_function("denoise"):
-                        for index, current_timestep in enumerate(denoise_steps):
-                            timestep = torch.ones(
-                                [batch_size, current_num_frames],
-                                device=noise.device,
-                                dtype=torch.int64
-                            ) * current_timestep
+                with trace_range("denoise"):
+                    for index, current_timestep in enumerate(denoise_steps):
+                        timestep = torch.ones(
+                            [batch_size, current_num_frames],
+                            device=noise.device,
+                            dtype=torch.int64
+                        ) * current_timestep
 
-                            if index < len(denoise_steps) - 1:
-                                _, denoised_pred = self.generator(
-                                    noisy_image_or_video=noisy_input,
-                                    conditional_dict=cond_current(conditional_dict, current_start_frame, self.num_frame_per_block, mode=mode),
-                                    timestep=timestep,
-                                    kv_cache=self.kv_cache1,
-                                    kv_cache_mouse=self.kv_cache_mouse,
-                                    kv_cache_keyboard=self.kv_cache_keyboard,
-                                    crossattn_cache=self.crossattn_cache,
-                                    current_start=current_start_frame * self.frame_seq_length,
-                                )
-                                next_timestep = denoise_steps[index + 1]
-                                noisy_input = self.scheduler.add_noise(
-                                    rearrange(denoised_pred, "b c f h w -> (b f) c h w"),
-                                    torch.randn_like(rearrange(denoised_pred, "b c f h w -> (b f) c h w")),
-                                    next_timestep * torch.ones(
-                                        [batch_size * current_num_frames],
-                                        device=noise.device,
-                                        dtype=torch.long,
-                                    ),
-                                )
-                                noisy_input = rearrange(noisy_input, "(b f) c h w -> b c f h w", b=denoised_pred.shape[0])
-                            else:
-                                _, denoised_pred = self.generator(
-                                    noisy_image_or_video=noisy_input,
-                                    conditional_dict=cond_current(conditional_dict, current_start_frame, self.num_frame_per_block, mode=mode),
-                                    timestep=timestep,
-                                    kv_cache=self.kv_cache1,
-                                    kv_cache_mouse=self.kv_cache_mouse,
-                                    kv_cache_keyboard=self.kv_cache_keyboard,
-                                    crossattn_cache=self.crossattn_cache,
-                                    current_start=current_start_frame * self.frame_seq_length,
-                                )
+                        if index < len(denoise_steps) - 1:
+                            _, denoised_pred = self.generator(
+                                noisy_image_or_video=noisy_input,
+                                conditional_dict=cond_current(conditional_dict, current_start_frame, self.num_frame_per_block, mode=mode),
+                                timestep=timestep,
+                                kv_cache=self.kv_cache1,
+                                kv_cache_mouse=self.kv_cache_mouse,
+                                kv_cache_keyboard=self.kv_cache_keyboard,
+                                crossattn_cache=self.crossattn_cache,
+                                current_start=current_start_frame * self.frame_seq_length,
+                            )
+                            next_timestep = denoise_steps[index + 1]
+                            noisy_input = self.scheduler.add_noise(
+                                rearrange(denoised_pred, "b c f h w -> (b f) c h w"),
+                                torch.randn_like(rearrange(denoised_pred, "b c f h w -> (b f) c h w")),
+                                next_timestep * torch.ones(
+                                    [batch_size * current_num_frames],
+                                    device=noise.device,
+                                    dtype=torch.long,
+                                ),
+                            )
+                            noisy_input = rearrange(noisy_input, "(b f) c h w -> b c f h w", b=denoised_pred.shape[0])
+                        else:
+                            _, denoised_pred = self.generator(
+                                noisy_image_or_video=noisy_input,
+                                conditional_dict=cond_current(conditional_dict, current_start_frame, self.num_frame_per_block, mode=mode),
+                                timestep=timestep,
+                                kv_cache=self.kv_cache1,
+                                kv_cache_mouse=self.kv_cache_mouse,
+                                kv_cache_keyboard=self.kv_cache_keyboard,
+                                crossattn_cache=self.crossattn_cache,
+                                current_start=current_start_frame * self.frame_seq_length,
+                            )
 
-                    if use_metrics:
-                        ev_den_e.record()
+                _trace_sync()
+                if use_metrics:
+                    ev_den_e.record()
 
-                # record output (kept)
+                # record output
+                if denoised_pred is None:
+                    raise RuntimeError("denoised_pred is None; denoise did not produce latents.")
                 output[:, :, current_start_frame:current_start_frame + current_num_frames] = denoised_pred
 
                 # ------------------------------
                 # ctx update (Step 3.3)
                 # ------------------------------
-                did_ctx = profile_focus in ("all", "ctx")
+                did_ctx = (profile_focus in ("all", "ctx"))
                 if did_ctx:
                     if use_metrics:
                         ev_ctx_s.record()
 
-                    with record_function("ctx_update"):
+                    with trace_range("ctx_update"):
                         context_timestep = torch.ones_like(timestep) * self.args.context_noise
                         self.generator(
                             noisy_image_or_video=denoised_pred,
@@ -400,32 +424,34 @@ class CausalInferencePipeline(torch.nn.Module):
                             current_start=current_start_frame * self.frame_seq_length,
                         )
 
+                    _trace_sync()
                     if use_metrics:
                         ev_ctx_e.record()
 
-                # move frame index (kept)
+                # move frame index
                 current_start_frame += current_num_frames
 
                 # ------------------------------
                 # decode
                 # ------------------------------
-                did_decode = profile_focus in ("all", "decode")
+                did_decode = (profile_focus in ("all", "decode"))
                 video = None
                 if did_decode:
                     if use_metrics:
                         ev_dec_s.record()
 
-                    with record_function("vae_decode"):
+                    with trace_range("vae_decode"):
                         denoised_pred_t = denoised_pred.transpose(1, 2)
                         video, vae_cache = self.vae_decoder(denoised_pred_t.half(), *vae_cache)
                         videos += [video]
 
+                    _trace_sync()
                     if use_metrics:
                         ev_dec_e.record()
 
                 if use_metrics:
                     ev_total_e.record()
-                    ev_total_e.synchronize()  # sync once per block to get accurate ms
+                    ev_total_e.synchronize()
 
                     if not is_warmup:
                         total_ms = float(ev_total_s.elapsed_time(ev_total_e))
@@ -438,7 +464,6 @@ class CausalInferencePipeline(torch.nn.Module):
                         metrics["block_ms_ctx"].append(ctx_ms)
                         metrics["block_ms_decode"].append(dec_ms)
 
-                        # FPS only meaningful when decode produces frames
                         if did_decode and video is not None:
                             frames_out = float(video.shape[1])
                             fps = frames_out * 1000.0 / max(total_ms, 1e-6)
@@ -447,15 +472,17 @@ class CausalInferencePipeline(torch.nn.Module):
                         metrics["fps"].append(float(fps))
 
                         if profile:
-                            print(f"block_total_ms: {total_ms:.3f}  denoise_ms: {den_ms:.3f}  ctx_ms: {ctx_ms:.3f}  decode_ms: {dec_ms:.3f}", flush=True)
+                            print(
+                                f"block_total_ms: {total_ms:.3f}  denoise_ms: {den_ms:.3f}  "
+                                f"ctx_ms: {ctx_ms:.3f}  decode_ms: {dec_ms:.3f}",
+                                flush=True
+                            )
                             if did_decode and video is not None:
                                 print(f"  - FPS: {fps:.2f}", flush=True)
 
-            # Let the external torch profiler advance per block (gives clean block slices)
             if torch_profiler is not None:
                 torch_profiler.step()
 
-        # peak VRAM: caller should reset_peak_memory_stats() before calling inference
         if return_metrics:
             metrics["peak_mem_bytes"] = int(torch.cuda.max_memory_allocated(device=noise.device))
 
