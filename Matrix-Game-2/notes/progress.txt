@@ -63,3 +63,40 @@ Therefore, we have accomplished
 python inference.py   --config_path configs/inference_yaml/inference_universal.yaml   --img_path demo_images/universal/0000.png   --num_output_frames 150   --output_folder outputs/   --pretrained_model_path /home/mac_local/Matrix-Game/Matrix-Game-2/Matrix-Game-2.0   --bench --torch_profile   --warmup_blocks 2   --max_blocks 4   --torch_profile_dir prof_runs/matrix2_clean
 ```
 
+The dominating phase based on this profiling is denoise, then VAE decode, then context update.
+
+We also obtain the cuda runtime for all phases, where the head of the results are
+```
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                                   Name    Self CPU %      Self CPU   CPU total %     CPU total  CPU time avg     Self CUDA   Self CUDA %    CUDA total  CUDA time avg       CPU Mem  Self CPU Mem      CUDA Mem  Self CUDA Mem    # of Calls  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                                denoise         0.00%       0.000us         0.00%       0.000us       0.000us        1.988s        92.02%        1.988s     496.952ms           0 B           0 B           0 B           0 B             4  
+                                             vae_decode         0.00%       0.000us         0.00%       0.000us       0.000us        1.178s        54.54%        1.178s     294.531ms           0 B           0 B           0 B           0 B             4  
+                              aten::slow_conv_dilated3d         2.21%      84.019ms        26.02%     990.846ms       2.815ms     771.123ms        35.70%     975.228ms       2.771ms           0 B           0 B      19.30 GB    -513.99 GB           352  
+                                             ctx_update         0.00%       0.000us         0.00%       0.000us       0.000us     637.559ms        29.51%     637.559ms     159.390ms           0 B           0 B           0 B           0 B             4  
+void at::native::vol2col_kernel<c10::Half>(long, c10...         0.00%       0.000us         0.00%       0.000us       0.000us     560.170ms        25.93%     560.170ms       1.667ms           0 B           0 B           0 B           0 B           336  
+                                            aten::copy_         5.02%     191.240ms        21.17%     806.253ms      13.327us     306.391ms        14.18%     311.866ms       5.155us       1.03 KB     -15.22 KB           0 B           0 B         60500  
+                                            aten::addmm         3.28%     124.910ms         4.13%     157.074ms      32.082us     155.321ms         7.19%     155.321ms      31.724us           0 B           0 B      49.07 GB      49.07 GB          4896  
+                        flash_attn::_flash_attn_forward         0.83%      31.707ms         1.16%      44.167ms      92.014us     149.002ms         6.90%     149.308ms     311.058us           0 B           0 B       2.49 GB           0 B           480  
+void flash::flash_fwd_kernel<Flash_fwd_kernel_traits...         0.00%       0.000us         0.00%       0.000us       0.000us     149.002ms         6.90%     149.002ms     310.422us           0 B           0 B           0 B           0 B           480  
+void at::native::elementwise_kernel<128, 4, at::nati...         0.00%       0.000us         0.00%       0.000us       0.000us     140.404ms         6.50%     140.404ms       6.561us           0 B           0 B           0 B           0 B         21400  
+                 flash_attn::_flash_attn_varlen_forward         1.73%      65.987ms         2.35%      89.576ms      93.308us     126.191ms         5.84%     126.673ms     131.951us           0 B           0 B       7.36 GB           0 B           960  
+void flash::flash_fwd_kernel<Flash_fwd_kernel_traits...         0.00%       0.000us         0.00%       0.000us       0.000us     126.191ms         5.84%     126.191ms     131.449us           0 B           0 B           0 B           0 B           960  
+                                              aten::mul         1.94%      73.963ms         3.45%     131.394ms       9.393us     122.592ms         5.68%     124.200ms       8.879us      39.75 KB      39.75 KB     109.97 GB     109.97 GB         13988  
+
+```
+
+denoise has Self CUDA = 1.988s and Self CPU = 0.000us
+vae_decode has Self CUDA = 1.178s and Self CPU = 0.000us
+ctx_update has Self CUDA = 637.6ms and Self CPU = 0.000us
+
+Therefore GPU kernel execution is dominant. Looking at the operations, the ones taking up the most time is 
+aten::slow_conv_dilated3d (CUDA total ~975ms)
+vol2col_kernel (CUDA total ~560ms)
+aten::addmm (CUDA total ~155ms)
+flash_attn::_flash_attn_forward (CUDA total ~149ms)
+
+If python CPU was the bottleneck, we will see more time here. 
+
+Therefore the limiter is the GPU side compute/memory work from denoise and VAE decode.
+
