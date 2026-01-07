@@ -208,3 +208,53 @@ optimizing the vae_decoder
 ```
 python inference.py   --config_path configs/inference_yaml/inference_universal.yaml   --img_path demo_images/universal/0000.png   --num_output_frames 150   --output_folder outputs/   --pretrained_model_path /home/mac_local/Matrix-Game/Matrix-Game-2/Matrix-Game-2.0   --bench --torch_profile   --warmup_blocks 2   --max_blocks 6   --profile_focus decode   --profile_timesteps 0   
 ```
+
+The bottleneck is in 
+
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                                   Name    Self CPU %      Self CPU   CPU total %     CPU total  CPU time avg     Self CUDA   Self CUDA %    CUDA total  CUDA time avg       CPU Mem  Self CPU Mem      CUDA Mem  Self CUDA Mem    # of Calls  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                             vae_decode         0.00%       0.000us         0.00%       0.000us       0.000us        1.768s       104.22%        1.768s     294.644ms           0 B           0 B           0 B           0 B             6  
+                              aten::slow_conv_dilated3d         3.63%      64.294ms        56.03%     992.500ms       1.901ms        1.157s        68.18%        1.393s       2.668ms           0 B           0 B      28.82 GB    -771.04 GB           522  
+void at::native::vol2col_kernel<c10::Half>(long, c10...         0.00%       0.000us         0.00%       0.000us       0.000us     840.309ms        49.54%     840.309ms       1.610ms           0 B           0 B           0 B           0 B           522  
+void at::native::elementwise_kernel<128, 4, at::nati...         0.00%       0.000us         0.00%       0.000us       0.000us     210.972ms        12.44%     210.972ms       6.571us           0 B           0 B           0 B           0 B         32106  
+             nvjet_hsh_384x96_64x3_2x1_v_badd_coopA_NNT         0.00%       0.000us         0.00%       0.000us       0.000us     181.142ms        10.68%     181.142ms       1.677ms           0 B           0 B           0 B           0 B           108  
+                                    Command Buffer Full        41.05%     727.232ms        41.05%     727.232ms     303.013us     175.302ms        10.33%     175.302ms      73.042us           0 B           0 B           0 B           0 B          2400  
+                                            aten::copy_         5.01%      88.760ms        45.17%     800.156ms      25.296us     157.095ms         9.26%     167.810ms       5.305us           0 B        -384 B           0 B           0 B         31632  
+            nvjet_hsh_192x192_64x3_2x1_v_badd_coopB_NNN         0.00%       0.000us         0.00%       0.000us       0.000us      94.256ms         5.56%      94.256ms     872.738us           0 B           0 B           0 B           0 B           108  
+## Call CompiledFxGraph falkigfpqu63d44rrli4yuhn3ozj...         0.00%       0.000us         0.00%       0.000us       0.000us      64.576ms         3.81%      64.576ms       3.588ms           0 B           0 B           0 B           0 B            18  
+## Call CompiledFxGraph ftoojlkuckf4mrwgvx3llv3dyxvr...         0.00%       0.000us         0.00%       0.000us       0.000us      60.390ms         3.56%      60.390ms       3.355ms           0 B           0 B           0 B           0 B            18  
+                                              aten::cat         0.33%       5.792ms         2.57%      45.479ms     161.273us      55.693ms         3.28%      61.737ms     218.925us           0 B           0 B      40.13 GB      40.13 GB           282  
+
+aten::slow_conv_dilated3d
+from the profiler it is diagnosed that this comes from CausalConv3d, and the forward pass is not optimzied. 
+Here we update the looping logic where it is processing one frame units at a time to doing all in one go. 
+
+The result is 
+
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                                   Name    Self CPU %      Self CPU   CPU total %     CPU total  CPU time avg     Self CUDA   Self CUDA %    CUDA total  CUDA time avg       CPU Mem  Self CPU Mem      CUDA Mem  Self CUDA Mem    # of Calls  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                             vae_decode         0.00%       0.000us         0.00%       0.000us       0.000us     701.085ms       107.77%     701.085ms     116.848ms           0 B           0 B           0 B           0 B             6  
+                                aten::cudnn_convolution         2.17%      15.319ms         3.99%      28.170ms      62.600us     277.045ms        42.59%     278.595ms     619.099us           0 B           0 B      34.06 GB      33.56 GB           450  
+sm90_xmma_fprop_implicit_gemm_f16f16_f16f32_f32_nhwc...         0.00%       0.000us         0.00%       0.000us       0.000us     126.706ms        19.48%     126.706ms       1.173ms           0 B           0 B           0 B           0 B           108  
+sm90_xmma_fprop_implicit_gemm_f16f16_f16f32_f32_nhwc...         0.00%       0.000us         0.00%       0.000us       0.000us     111.396ms        17.12%     111.396ms     515.721us           0 B           0 B           0 B           0 B           216  
+void at::native::elementwise_kernel<128, 4, at::nati...         0.00%       0.000us         0.00%       0.000us       0.000us      88.388ms        13.59%      88.388ms     118.801us           0 B           0 B           0 B           0 B           744  
+                                            aten::copy_         0.60%       4.260ms         1.61%      11.337ms      11.810us      86.295ms        13.26%      86.304ms      89.900us          32 B        -352 B           0 B           0 B           960  
+void at::native::elementwise_kernel<128, 4, at::nati...         0.00%       0.000us         0.00%       0.000us       0.000us      51.265ms         7.88%      51.265ms     155.347us           0 B           0 B           0 B           0 B           330  
+                                             aten::add_         0.30%       2.130ms         0.51%       3.597ms      11.754us      45.644ms         7.02%      45.644ms     149.164us           0 B           0 B           0 B           0 B           306  
+                                              aten::cat         0.92%       6.475ms         1.86%      13.127ms      41.280us      41.264ms         6.34%      41.264ms     129.760us           0 B           0 B      41.22 GB      41.22 GB           318  
+                         Memcpy DtoD (Device -> Device)         0.00%       0.000us         0.00%       0.000us       0.000us      38.968ms         5.99%      38.968ms      48.832us           0 B           0 B           0 B           0 B           798  
+                              aten::slow_conv_dilated3d         0.85%       5.987ms         1.87%      13.221ms      73.453us      26.043ms         4.00%      26.432ms     146.846us           0 B           0 B     529.40 MB     -12.24 GB           180  
+
+
+So vae_decode average cuda time went down from 294.644ms to 116.848ms , and the bottleneck,
+aten::slow_conv_dilated3d's calls changed from  2.668ms CUDA time average, 522 calls to  146.846us, and  180 respectably. 
+
+We also profile the end to end runs including denoise, decode and context update and we see this optimimzation scaling when profiling the whole. 
+Comparing the decode profilers first, we see that the runs for each block for the baseline is ~295ms and the optimized is ~116ms, which matches what we got in the table. 
+In the end to end, we can see that the "decode" section, highlighted in caramel color is much much shorter. 
+
+Here because we see consistencies between the whole and the decode where performance gain is clear, we move forward. 
+
+---

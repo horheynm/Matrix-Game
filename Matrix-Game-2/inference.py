@@ -31,6 +31,8 @@ from utils.misc import set_seed
 from utils.conditions import Bench_actions_universal, Bench_actions_gta_drive, Bench_actions_templerun
 from utils.wan_wrapper import WanDiffusionWrapper
 from safetensors.torch import load_file
+from torch.profiler import tensorboard_trace_handler
+
 
 
 def parse_args():
@@ -121,6 +123,9 @@ class InteractiveGameInference:
             v2.ToTensor(),
             v2.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
         ])
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cudnn.deterministic = False
+
 
     def _init_config(self):
         self.config = OmegaConf.load(self.args.config_path)
@@ -142,6 +147,7 @@ class InteractiveGameInference:
 
         current_vae_decoder.load_state_dict(decoder_state_dict)
         current_vae_decoder.to(self.device, torch.float16)
+        # current_vae_decoder.to(memory_format=torch.channels_last_3d)  
         current_vae_decoder.requires_grad_(False)
         current_vae_decoder.eval()
 
@@ -265,6 +271,8 @@ class InteractiveGameInference:
                     profile_timesteps=int(self.args.profile_timesteps),
                 )
             torch.cuda.synchronize()
+            torch.cuda.reset_peak_memory_stats()
+
 
             # --- Phase 1: capture ONLY steady blocks using a schedule ---
             wait = int(self.args.warmup_blocks)
@@ -275,8 +283,9 @@ class InteractiveGameInference:
                 activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
                 record_shapes=True,
                 profile_memory=True,
-                with_stack=False,
+                with_stack=True,
                 schedule=schedule(wait=wait, warmup=0, active=active, repeat=1),
+                # on_trace_ready=tensorboard_trace_handler(self.args.torch_profile_dir),
             ) as prof:
                 with torch.no_grad():
                     videos, metrics = self.pipeline.inference(
@@ -330,7 +339,12 @@ class InteractiveGameInference:
 
         summary = _summarize_metrics(metrics)
 
-        metrics_path = self.args.metrics_path or os.path.join(self.args.output_folder, "bench_stats.json")
+        if self.args.metrics_path:
+            metrics_path = self.args.metrics_path
+        elif self.args.torch_profile:
+            metrics_path = os.path.join(self.args.torch_profile_dir, "bench_stats.json")
+        else:
+            metrics_path = os.path.join(self.args.output_folder, "bench_stats.json")
         os.makedirs(os.path.dirname(metrics_path), exist_ok=True)
         with open(metrics_path, "w") as f:
             json.dump(summary, f, indent=2)
