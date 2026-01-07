@@ -285,7 +285,7 @@ class InteractiveGameInference:
                         return_latents=False,
                         mode=mode,
                         profile=False,  # avoid per-block prints during profiler capture
-                        warmup_blocks=0,          # schedule handles "warmup exclusion"
+                        warmup_blocks=wait,          # schedule handles "warmup exclusion"
                         max_blocks=total_blocks,  # run enough blocks to cover wait+active
                         torch_profiler=prof,
                         return_metrics=True,
