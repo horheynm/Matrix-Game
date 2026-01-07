@@ -200,3 +200,11 @@ From the above tables and profiler results we see that
     The pair tells 3D conv lowering/im2col fallback
 - “Command Buffer Full”
     ~695ms CPU self in Command Buffer Full plus ~143ms CUDA, which means too many small kernels / launch pressure, GPU command buffer saturating causing CPU stalls.
+
+
+---
+
+optimizing the vae_decoder
+```
+python inference.py   --config_path configs/inference_yaml/inference_universal.yaml   --img_path demo_images/universal/0000.png   --num_output_frames 150   --output_folder outputs/   --pretrained_model_path /home/mac_local/Matrix-Game/Matrix-Game-2/Matrix-Game-2.0   --bench --torch_profile   --warmup_blocks 2   --max_blocks 6   --profile_focus decode   --profile_timesteps 0   
+```
