@@ -205,8 +205,9 @@ From the above tables and profiler results we see that
 ---
 
 optimizing the vae_decoder
+
 ```
-python inference.py   --config_path configs/inference_yaml/inference_universal.yaml   --img_path demo_images/universal/0000.png   --num_output_frames 150   --output_folder outputs/   --pretrained_model_path /home/mac_local/Matrix-Game/Matrix-Game-2/Matrix-Game-2.0   --bench --torch_profile   --warmup_blocks 2   --max_blocks 6   --profile_focus decode   --profile_timesteps 0   
+python inference.py --config_path configs/inference_yaml/inference_universal.yaml --img_path demo_images/universal/0000.png --num_output_frames 150 --output_folder outputs/ --pretrained_model_path /home/mac_local/Matrix-Game/Matrix-Game-2/Matrix-Game-2.0 --bench --torch_profile --warmup_blocks 2 --max_blocks 6 --profile_focus decode --profile_timesteps 0 --torch_profile_dir prof_runs/matrix2_decode_clean_optimized
 ```
 
 The bottleneck is in 
@@ -258,3 +259,5 @@ In the end to end, we can see that the "decode" section, highlighted in caramel 
 Here because we see consistencies between the whole and the decode where performance gain is clear, we move forward. 
 
 ---
+
+In the previous run, i commented out # current_vae_decoder.to(memory_format=torch.channels_last_3d) which caused the block ms time to be worse. Therefore fixed it that supports 5D
