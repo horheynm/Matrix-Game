@@ -19,11 +19,67 @@ import math
 import torch.distributed as dist
 from .action_module import ActionModule
 
+import torch
+from contextlib import contextmanager
+
+@contextmanager
+def nvtx_range(name: str):
+    torch.cuda.nvtx.range_push(name)
+    try:
+        yield
+    finally:
+        torch.cuda.nvtx.range_pop()
+
 # wan 1.3B model has a weird channel / head configurations and require max-autotune to work with flexattention
 # see https://github.com/pytorch/pytorch/issues/133254
 # change to default for other models
 # flex_attention = torch.compile(
 #     flex_attention, dynamic=False, mode="max-autotune-no-cudagraphs")
+
+import torch
+import torch.nn as nn
+
+class PatchEmbed2DFrom3D(nn.Module):
+    def __init__(self, conv3d: nn.Conv3d):
+        super().__init__()
+        kT, kH, kW = conv3d.kernel_size
+        sT, sH, sW = conv3d.stride
+        assert kT == 1 and sT == 1, "This fast path assumes patch_size[0] == 1 and stride[0] == 1"
+
+        self.in_channels = conv3d.in_channels
+        self.out_channels = conv3d.out_channels
+        self.k = (kH, kW)
+        self.s = (sH, sW)
+
+        self.conv2d = nn.Conv2d(
+            in_channels=conv3d.in_channels,
+            out_channels=conv3d.out_channels,
+            kernel_size=self.k,
+            stride=self.s,
+            padding=conv3d.padding[1:],
+            bias=(conv3d.bias is not None),
+        )
+
+        # Copy weights: [out, in, 1, kH, kW] -> [out, in, kH, kW]
+        with torch.no_grad():
+            self.conv2d.weight.copy_(conv3d.weight[:, :, 0, :, :])
+            if conv3d.bias is not None:
+                self.conv2d.bias.copy_(conv3d.bias)
+
+        # Encourage fast conv2d
+        self.conv2d = self.conv2d.to(memory_format=torch.channels_last)
+        
+
+    def forward(self, x_bcfhw: torch.Tensor) -> torch.Tensor:
+        # x: [B, C, F, H, W]
+        B, C, F, H, W = x_bcfhw.shape
+        x2d = x_bcfhw.permute(0, 2, 1, 3, 4).reshape(B * F, C, H, W)
+        x2d = x2d.contiguous(memory_format=torch.channels_last)
+        y2d = self.conv2d(x2d)
+        H2, W2 = y2d.shape[-2:]
+        y = y2d.reshape(B, F, self.out_channels, H2, W2).permute(0, 2, 1, 3, 4).contiguous()
+        return y
+
 
 
 def causal_rope_apply(x, grid_sizes, freqs, start_frame=0):
@@ -426,8 +482,27 @@ class CausalWanModel(ModelMixin, ConfigMixin, FromOriginalModelMixin, PeftAdapte
         self.eps = eps
 
         # embeddings
+        # self.patch_embedding = nn.Conv3d(
+        #     in_dim, dim, kernel_size=patch_size, stride=patch_size)
+        # self.patch_embedding = PatchEmbed2DFrom3D(self.patch_embedding).to(self.patch_embedding.weight.device)
+        # embeddings (keep this for checkpoint compatibility)
         self.patch_embedding = nn.Conv3d(
-            in_dim, dim, kernel_size=patch_size, stride=patch_size)
+            in_dim, dim, kernel_size=patch_size, stride=patch_size
+        )
+
+        # Optional fast path: rewrite to Conv2d when kt==1
+        self.use_patch2d = (patch_size[0] == 1)
+        if self.use_patch2d:
+            self.patch_embedding2d = nn.Conv2d(
+                in_dim,
+                dim,
+                kernel_size=patch_size[1:],
+                stride=patch_size[1:],
+                bias=(self.patch_embedding.bias is not None),
+            )
+            self._patch2d_synced = False
+
+
             
 
         self.time_embedding = nn.Sequential(
@@ -469,6 +544,27 @@ class CausalWanModel(ModelMixin, ConfigMixin, FromOriginalModelMixin, PeftAdapte
         self.block_mask_mouse = None
         self.use_rope_keyboard = True
         self.num_frame_per_block = 1
+
+    def _sync_patch2d_from_3d(self):
+        """Copy Conv3d patch weights into Conv2d patch weights once."""
+        if not getattr(self, "use_patch2d", False):
+            return
+        if getattr(self, "_patch2d_synced", False):
+            return
+
+        w3 = self.patch_embedding.weight  # [out, in, kt, kh, kw]
+        if w3.shape[2] != 1:
+            raise ValueError(
+                f"patch_size[0] must be 1 for Conv2d rewrite, got kt={w3.shape[2]}"
+            )
+
+        with torch.no_grad():
+            # squeeze time kernel dim
+            self.patch_embedding2d.weight.copy_(w3[:, :, 0, :, :])
+            if self.patch_embedding.bias is not None:
+                self.patch_embedding2d.bias.copy_(self.patch_embedding.bias)
+
+        self._patch2d_synced = True
 
     def _set_gradient_checkpointing(self, module, value=False):
         self.gradient_checkpointing = value
@@ -661,7 +757,24 @@ class CausalWanModel(ModelMixin, ConfigMixin, FromOriginalModelMixin, PeftAdapte
         x = torch.cat([x, cond_concat], dim=1) # B C' F H W
 
         # embeddings
-        x = self.patch_embedding(x)
+        # x = self.patch_embedding(x)
+
+        with nvtx_range("patch:patch_embedding"):
+            if self.use_patch2d:
+                self._sync_patch2d_from_3d()
+
+                # x: [B, C, F, H, W]  ->  [(B*F), C, H, W]
+                B, C, F, H, W = x.shape
+                x2 = x.permute(0, 2, 1, 3, 4).reshape(B * F, C, H, W).contiguous()
+
+                y2 = self.patch_embedding2d(x2)  # [(B*F), dim, H', W']
+                Hp, Wp = y2.shape[-2], y2.shape[-1]
+
+                # back: [B, dim, F, H', W']
+                x = y2.reshape(B, F, self.dim, Hp, Wp).permute(0, 2, 1, 3, 4).contiguous()
+            else:
+                x = self.patch_embedding(x)
+
         grid_sizes = torch.tensor(x.shape[2:], dtype=torch.long)
         x = x.flatten(2).transpose(1, 2) # B FHW C'
         seq_lens = torch.tensor([u.size(0) for u in x], dtype=torch.long)
