@@ -349,7 +349,16 @@ class InteractiveGameInference:
 
         summary = _summarize_metrics(metrics)
 
-        metrics_path = self.args.metrics_path or os.path.join(self.args.output_folder, "bench_stats.json")
+        # If torch_profile_dir is set, save bench_stats.json there as well
+        if self.args.metrics_path:
+            metrics_path = self.args.metrics_path
+        elif self.args.torch_profile and self.args.torch_profile_dir:
+            # Save to profiler directory if profiling is enabled
+            metrics_path = os.path.join(self.args.torch_profile_dir, "bench_stats.json")
+        else:
+            # Default: save to output folder
+            metrics_path = os.path.join(self.args.output_folder, "bench_stats.json")
+        
         os.makedirs(os.path.dirname(metrics_path), exist_ok=True)
         with open(metrics_path, "w") as f:
             json.dump(summary, f, indent=2)
