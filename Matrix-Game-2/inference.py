@@ -16,6 +16,8 @@ import time
 from typing import Any, Dict, List
 
 import torch
+import torch.nn as nn
+import os
 import numpy as np
 
 from omegaconf import OmegaConf
@@ -66,6 +68,8 @@ def parse_args():
                         help="Rows in profiler summary table.")
     parser.add_argument("--metrics_path", type=str, default="",
                         help="Optional explicit metrics json path. Default: <output_folder>/bench_stats.json")
+    parser.add_argument("--optimization", type=str, default="",
+                        help="Comma-separated optimizations: 1=VAE channels_last_3d, 2=Conv2d patch embedding")
 
     return parser.parse_args()
 
@@ -126,8 +130,17 @@ class InteractiveGameInference:
         self.config = OmegaConf.load(self.args.config_path)
 
     def _init_models(self):
-        import torch
-        import torch.nn as nn
+
+        # Parse optimization flags
+        optimizations = set()
+        if self.args.optimization:
+            optimizations = {int(x.strip()) for x in self.args.optimization.split(',') if x.strip().isdigit()}
+        
+        # Set environment variables for optimizations
+        # 1 = VAE channels_last_3d
+        # 2 = Conv2d patch embedding
+        if 2 in optimizations:
+            os.environ['OPT_PATCH_EMBED_2D'] = '1'
 
         def convert_5d_tensors_to_channels_last_3d(module: nn.Module) -> None:
             fmt = torch.channels_last_3d
@@ -158,8 +171,8 @@ class InteractiveGameInference:
 
         current_vae_decoder.load_state_dict(decoder_state_dict)
         current_vae_decoder.to(self.device, torch.float16)
-        # current_vae_decoder.to(memory_format=torch.channels_last_3d) 
-        convert_5d_tensors_to_channels_last_3d(current_vae_decoder)
+        if 1 in optimizations:
+            convert_5d_tensors_to_channels_last_3d(current_vae_decoder)
 
         current_vae_decoder.requires_grad_(False)
         current_vae_decoder.eval()

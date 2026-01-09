@@ -18,6 +18,7 @@ import torch
 import math
 import torch.distributed as dist
 from .action_module import ActionModule
+import os
 
 import torch
 from contextlib import contextmanager
@@ -441,7 +442,8 @@ class CausalWanModel(ModelMixin, ConfigMixin, FromOriginalModelMixin, PeftAdapte
         )
 
         # Optional fast path: rewrite to Conv2d when kt==1
-        self.use_patch2d = (patch_size[0] == 1)
+        use_patch2d_opt = os.environ.get('OPT_PATCH_EMBED_2D', '0') == '1'
+        self.use_patch2d = use_patch2d_opt and (patch_size[0] == 1)
         if self.use_patch2d:
             self.patch_embedding2d = nn.Conv2d(
                 in_dim,
@@ -451,9 +453,6 @@ class CausalWanModel(ModelMixin, ConfigMixin, FromOriginalModelMixin, PeftAdapte
                 bias=(self.patch_embedding.bias is not None),
             )
             self._patch2d_synced = False
-
-
-            
 
         self.time_embedding = nn.Sequential(
             nn.Linear(freq_dim, dim), nn.SiLU(), nn.Linear(dim, dim))
@@ -706,24 +705,25 @@ class CausalWanModel(ModelMixin, ConfigMixin, FromOriginalModelMixin, PeftAdapte
 
         x = torch.cat([x, cond_concat], dim=1) # B C' F H W
 
-        # embeddings
-        x = self.patch_embedding(x)
+        with nvtx_range("patch:patch_embedding"):
+            use_patch2d = bool(getattr(self, "use_patch2d", False)) and hasattr(self, "patch_embedding2d")
+            if use_patch2d:
+                self._sync_patch2d_from_3d()
 
-        # with nvtx_range("patch:patch_embedding"):
-        #     if self.use_patch2d:
-        #         self._sync_patch2d_from_3d()
+                # x: [B, C, F, H, W] -> [(B*F), C, H, W]
+                B, C, F, H, W = x.shape
+                x2 = x.permute(0, 2, 1, 3, 4).reshape(B * F, C, H, W)
 
-        #         # x: [B, C, F, H, W]  ->  [(B*F), C, H, W]
-        #         B, C, F, H, W = x.shape
-        #         x2 = x.permute(0, 2, 1, 3, 4).reshape(B * F, C, H, W).contiguous()
+                # Contiguity + memory format for Conv2d fast paths
+                x2 = x2.contiguous(memory_format=torch.channels_last)
 
-        #         y2 = self.patch_embedding2d(x2)  # [(B*F), dim, H', W']
-        #         Hp, Wp = y2.shape[-2], y2.shape[-1]
+                y2 = self.patch_embedding2d(x2)  # [(B*F), dim, H', W']
+                Hp, Wp = y2.shape[-2], y2.shape[-1]
 
-        #         # back: [B, dim, F, H', W']
-        #         x = y2.reshape(B, F, self.dim, Hp, Wp).permute(0, 2, 1, 3, 4).contiguous()
-        #     else:
-        #         x = self.patch_embedding(x)
+                # back: [B, dim, F, H', W']
+                x = y2.reshape(B, F, self.dim, Hp, Wp).permute(0, 2, 1, 3, 4).contiguous()
+            else:
+                x = self.patch_embedding(x)
 
         grid_sizes = torch.tensor(x.shape[2:], dtype=torch.long)
         x = x.flatten(2).transpose(1, 2) # B FHW C'

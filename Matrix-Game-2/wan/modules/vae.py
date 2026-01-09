@@ -6,13 +6,13 @@ import torch.cuda.amp as amp
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
+import os
 
 __all__ = [
     'WanVAE',
 ]
 
 CACHE_T = 2
-
 
 class CausalConv3d(nn.Conv3d):
     """
