@@ -24,17 +24,14 @@ We tested this repo on the following setup:
 ## Installation
 Create a conda environment and install dependencies:
 ```
-conda create -n matrix-game-2.0 python=3.10 -y
-conda activate matrix-game-2.0
-# install apex and FlashAttention
-# Our project also depends on [FlashAttention](https://github.com/Dao-AILab/flash-attention)
-git clone https://github.com/SkyworkAI/Matrix-Game.git
-cd Matrix-Game-2
+python3 -m venv venv
+source venv/bin/activate
 pip3 install setuptools
-pip install -r requirements.txt
+pip3 install -r requirements.txt 
+pip install flash-attn --no-build-isolation
 python setup.py develop
 
-pip install flash-attn --no-build-isolation
+pip install -U "huggingface_hub[cli]"
 ```
 
 

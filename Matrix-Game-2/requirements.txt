@@ -27,7 +27,7 @@ matplotlib
 sentencepiece
 pydantic
 scikit-image
-huggingface_hub[cli]
+huggingface-hub>=0.34.0,<1.0
 dominate
 # nvidia-pyindex
 nvidia-tensorrt

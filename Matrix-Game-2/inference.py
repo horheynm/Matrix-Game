@@ -307,7 +307,7 @@ class InteractiveGameInference:
                 activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
                 record_shapes=True,
                 profile_memory=True,
-                with_stack=False,
+                with_stack=True,
                 schedule=schedule(wait=wait, warmup=0, active=active, repeat=1),
             ) as prof:
                 with torch.no_grad():
