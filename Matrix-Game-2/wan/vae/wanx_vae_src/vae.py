@@ -38,6 +38,35 @@ def block_causal_mask(x, block_size):
     return mask
 
 
+# class CausalConv3d(nn.Conv3d):
+#     """
+#     Causal 3d convolusion.
+#     """
+
+#     def __init__(self, *args, **kwargs):
+#         super().__init__(*args, **kwargs)
+#         self._padding = (self.padding[2], self.padding[2], self.padding[1],
+#                          self.padding[1], 2 * self.padding[0], 0)
+#         self.padding = (0, 0, 0)
+
+#     def forward(self, x, cache_x=None):
+#         # keep 3D conv inputs in a cudnn-friendly layout
+#         x = x.contiguous(memory_format=torch.channels_last_3d)
+
+#         padding = list(self._padding)
+#         if cache_x is not None and self._padding[4] > 0:
+
+#             if cache_x.device != x.device:
+#                 cache_x = cache_x.to(device=x.device, non_blocking=True)
+#             x = torch.cat([cache_x, x], dim=2)
+#             padding[4] -= cache_x.shape[2]
+#             x = x.contiguous(memory_format=torch.channels_last_3d)  # cat may change strides
+
+#         x = F.pad(x, padding)
+#         x = x.contiguous(memory_format=torch.channels_last_3d)  # pad may change strides
+
+#         return super().forward(x)
+
 class CausalConv3d(nn.Conv3d):
     """
     Causal 3d convolusion.
@@ -50,20 +79,14 @@ class CausalConv3d(nn.Conv3d):
         self.padding = (0, 0, 0)
 
     def forward(self, x, cache_x=None):
-        # keep 3D conv inputs in a cudnn-friendly layout
-        x = x.contiguous(memory_format=torch.channels_last_3d)
+
 
         padding = list(self._padding)
         if cache_x is not None and self._padding[4] > 0:
-
-            if cache_x.device != x.device:
-                cache_x = cache_x.to(device=x.device, non_blocking=True)
             x = torch.cat([cache_x, x], dim=2)
             padding[4] -= cache_x.shape[2]
-            x = x.contiguous(memory_format=torch.channels_last_3d)  # cat may change strides
 
         x = F.pad(x, padding)
-        x = x.contiguous(memory_format=torch.channels_last_3d)  # pad may change strides
 
         return super().forward(x)
 

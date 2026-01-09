@@ -707,23 +707,23 @@ class CausalWanModel(ModelMixin, ConfigMixin, FromOriginalModelMixin, PeftAdapte
         x = torch.cat([x, cond_concat], dim=1) # B C' F H W
 
         # embeddings
-        # x = self.patch_embedding(x)
+        x = self.patch_embedding(x)
 
-        with nvtx_range("patch:patch_embedding"):
-            if self.use_patch2d:
-                self._sync_patch2d_from_3d()
+        # with nvtx_range("patch:patch_embedding"):
+        #     if self.use_patch2d:
+        #         self._sync_patch2d_from_3d()
 
-                # x: [B, C, F, H, W]  ->  [(B*F), C, H, W]
-                B, C, F, H, W = x.shape
-                x2 = x.permute(0, 2, 1, 3, 4).reshape(B * F, C, H, W).contiguous()
+        #         # x: [B, C, F, H, W]  ->  [(B*F), C, H, W]
+        #         B, C, F, H, W = x.shape
+        #         x2 = x.permute(0, 2, 1, 3, 4).reshape(B * F, C, H, W).contiguous()
 
-                y2 = self.patch_embedding2d(x2)  # [(B*F), dim, H', W']
-                Hp, Wp = y2.shape[-2], y2.shape[-1]
+        #         y2 = self.patch_embedding2d(x2)  # [(B*F), dim, H', W']
+        #         Hp, Wp = y2.shape[-2], y2.shape[-1]
 
-                # back: [B, dim, F, H', W']
-                x = y2.reshape(B, F, self.dim, Hp, Wp).permute(0, 2, 1, 3, 4).contiguous()
-            else:
-                x = self.patch_embedding(x)
+        #         # back: [B, dim, F, H', W']
+        #         x = y2.reshape(B, F, self.dim, Hp, Wp).permute(0, 2, 1, 3, 4).contiguous()
+        #     else:
+        #         x = self.patch_embedding(x)
 
         grid_sizes = torch.tensor(x.shape[2:], dtype=torch.long)
         x = x.flatten(2).transpose(1, 2) # B FHW C'
